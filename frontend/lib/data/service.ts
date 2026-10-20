@@ -54,11 +54,13 @@ function demoDataset() {
 
 async function loadGeoNames(): Promise<string[] | null> {
   try {
-    const res = await fetch(GEOJSON_URL)
+    const res = await fetch(GEOJSON_URL, { cache: 'no-store' })
     if (!res.ok) return null
+
     const geo = (await res.json()) as {
       features: { properties: { ST_NM: string } }[]
     }
+
     return geo.features.map((f) => f.properties.ST_NM)
   } catch {
     return null
@@ -117,10 +119,18 @@ const demoService: AnalyticsService = {
   },
 }
 
-const EMPTY_FILTER_VALUES = new Set(['', 'all', 'all states', 'all districts', 'all crops', 'all seasons'])
+const EMPTY_FILTER_VALUES = new Set([
+  '',
+  'all',
+  'all states',
+  'all districts',
+  'all crops',
+  'all seasons',
+])
 
 function selected(value: string): string | undefined {
   const normalized = value.trim()
+
   return !normalized || EMPTY_FILTER_VALUES.has(normalized.toLowerCase())
     ? undefined
     : normalized
@@ -128,9 +138,11 @@ function selected(value: string): string | undefined {
 
 function yearList(filters: Filters): string | undefined {
   const years: number[] = []
+
   for (let year = filters.yearFrom; year <= filters.yearTo; year++) {
     years.push(year)
   }
+
   return years.length ? years.join(',') : undefined
 }
 
@@ -170,22 +182,53 @@ async function fetchJson<T>(
   params?: URLSearchParams,
 ): Promise<T> {
   const query = params?.toString()
-  const url = `${baseUrl}${path}${query ? `?${query}` : ''}`
+  const url = `${baseUrl.replace(/\/$/, '')}${path}${query ? `?${query}` : ''}`
 
-  const response = await fetch(url)
+  console.info('[Analytics API] Request:', url)
+
+  let response: Response
+
+  try {
+    response = await fetch(url, {
+      cache: 'no-store',
+      headers: { Accept: 'application/json' },
+    })
+  } catch (error) {
+    console.error('[Analytics API] Network/CORS error:', url, error)
+    throw new Error(
+      `Unable to connect to the analytics API at ${url}. Check the browser console and backend CORS configuration.`,
+    )
+  }
 
   if (!response.ok) {
+    const bodyText = await response.text().catch(() => '')
+    console.error(
+      '[Analytics API] HTTP error:',
+      response.status,
+      url,
+      bodyText,
+    )
+
     let detail = ''
+
     try {
-      const body = await response.json()
-      detail = typeof body.detail === 'string' ? `: ${body.detail}` : ''
+      const body = JSON.parse(bodyText) as { detail?: unknown }
+      if (typeof body.detail === 'string') detail = `: ${body.detail}`
     } catch {
-      // Keep the HTTP status if the response has no JSON body.
+      if (bodyText) detail = `: ${bodyText.slice(0, 200)}`
     }
+
     throw new Error(`API ${path} returned ${response.status}${detail}`)
   }
 
-  return response.json() as Promise<T>
+  try {
+    const data = (await response.json()) as T
+    console.info('[Analytics API] Success:', path)
+    return data
+  } catch (error) {
+    console.error('[Analytics API] Invalid JSON response:', url, error)
+    throw new Error(`API ${path} returned an invalid JSON response`)
+  }
 }
 
 function recordsFromApi(
@@ -209,8 +252,6 @@ function recordsFromApi(
       area: areaValue == null ? null : numberValue(areaValue),
       production:
         productionValue == null ? null : numberValue(productionValue),
-      // The source labels every row "Actual", but 2024–2025 are flagged
-      // by the backend as potentially extrapolated.
       dataType: year >= 2024 ? 'Synthetic' : 'Observed',
     }
   })
@@ -220,29 +261,27 @@ function normalizeBreakdown(
   rows: ApiRecord[],
   dimension: Dimension,
 ): BreakdownRow[] {
-  return rows.map((row) => {
-    const keyField: Record<Dimension, string> = {
-      state: 'State_Name',
-      district: 'District_Name',
-      crop: 'Crop',
-      season: 'Season',
-    }
+  const keyField: Record<Dimension, string> = {
+    state: 'State_Name',
+    district: 'District_Name',
+    crop: 'Crop',
+    season: 'Season',
+  }
 
-    return {
-      key: textValue(row[keyField[dimension]] ?? row.key ?? row[dimension]),
-      production: numberValue(
-        row.Total_Production ?? row.Production ?? row.production,
-      ),
-      area: numberValue(row.Total_Area ?? row.Area ?? row.area),
-      yield:
-        row.Yield_t_per_ha == null && row.yield == null
-          ? null
-          : numberValue(row.Yield_t_per_ha ?? row.yield),
-      records: numberValue(row.Record_Count ?? row.records),
-      cropCount: numberValue(row.cropCount),
-      districtCount: numberValue(row.districtCount),
-    }
-  })
+  return rows.map((row) => ({
+    key: textValue(row[keyField[dimension]] ?? row.key ?? row[dimension]),
+    production: numberValue(
+      row.Total_Production ?? row.Production ?? row.production,
+    ),
+    area: numberValue(row.Total_Area ?? row.Area ?? row.area),
+    yield:
+      row.Yield_t_per_ha == null && row.yield == null
+        ? null
+        : numberValue(row.Yield_t_per_ha ?? row.yield),
+    records: numberValue(row.Record_Count ?? row.records),
+    cropCount: numberValue(row.cropCount),
+    districtCount: numberValue(row.districtCount),
+  }))
 }
 
 function normalizeTimeSeries(
@@ -271,7 +310,9 @@ function normalizeTimeSeries(
   return {
     metric,
     series: [{ name: seriesName, points }],
-    syntheticYears: [...new Set(points.filter((p) => p.synthetic).map((p) => p.year))],
+    syntheticYears: [
+      ...new Set(points.filter((p) => p.synthetic).map((p) => p.year)),
+    ],
   }
 }
 
@@ -292,19 +333,18 @@ function normalizeMeta(response: ApiRecord): DatasetMeta {
     ? response.seasons.map(textValue)
     : []
 
-  // Parse the per-state maps returned by the enriched /api/metadata endpoint.
-  // Fall back to empty objects so the filter bar degrades gracefully.
-  const districtsByState: Record<string, string[]> =
-    response.districts_by_state && typeof response.districts_by_state === 'object'
+  const districtsByState =
+    response.districts_by_state &&
+    typeof response.districts_by_state === 'object'
       ? (response.districts_by_state as Record<string, string[]>)
       : {}
 
-  const cropsByState: Record<string, string[]> =
+  const cropsByState =
     response.crops_by_state && typeof response.crops_by_state === 'object'
       ? (response.crops_by_state as Record<string, string[]>)
       : {}
 
-  const seasonsByCrop: Record<string, string[]> =
+  const seasonsByCrop =
     response.seasons_by_crop && typeof response.seasons_by_crop === 'object'
       ? (response.seasons_by_crop as Record<string, string[]>)
       : {}
@@ -383,7 +423,8 @@ function normalizeQuality(response: ApiRecord): QualityReport {
       {
         analysis: 'Production aggregations',
         excluded: missingProduction,
-        reason: 'Missing production values are excluded, not replaced with zero.',
+        reason:
+          'Missing production values are excluded, not replaced with zero.',
       },
     ],
     warnings,
@@ -401,34 +442,34 @@ function createApiService(baseUrl: string): AnalyticsService {
     mode: 'api',
 
     async getMeta() {
-      return normalizeMeta(await fetchJson<ApiRecord>(baseUrl, '/api/metadata'))
+      return normalizeMeta(
+        await fetchJson<ApiRecord>(baseUrl, '/api/metadata'),
+      )
     },
 
     async getKpis(filters) {
-      const [stateResponse, yearResponse, cropResponse, meta] =
-        await Promise.all([
-          fetchJson<{ data: ApiRecord[] }>(
-            baseUrl,
-            '/api/statewise',
-            filtersToParams(filters),
-          ),
-          fetchJson<{ data: ApiRecord[] }>(
-            baseUrl,
-            '/api/yearwise',
-            filtersToParams(filters),
-          ),
-          fetchJson<{ data: ApiRecord[] }>(
-            baseUrl,
-            '/api/cropwise',
-            new URLSearchParams({
-              n: '115',
-              ...(filtersToParams(filters).toString()
-                ? Object.fromEntries(filtersToParams(filters))
-                : {}),
-            }),
-          ),
-          this.getMeta(),
-        ])
+      const stateParams = filtersToParams(filters)
+      const yearParams = filtersToParams(filters)
+      const cropParams = filtersToParams(filters)
+      cropParams.set('n', '115')
+
+      const [stateResponse, yearResponse, cropResponse] = await Promise.all([
+        fetchJson<{ data: ApiRecord[] }>(
+          baseUrl,
+          '/api/statewise',
+          stateParams,
+        ),
+        fetchJson<{ data: ApiRecord[] }>(
+          baseUrl,
+          '/api/yearwise',
+          yearParams,
+        ),
+        fetchJson<{ data: ApiRecord[] }>(
+          baseUrl,
+          '/api/cropwise',
+          cropParams,
+        ),
+      ])
 
       const stateRows = stateResponse.data ?? []
       const yearRows = yearResponse.data ?? []
@@ -441,6 +482,7 @@ function createApiService(baseUrl: string): AnalyticsService {
       const currentYear = yearRows.find(
         (r) => numberValue(r.Crop_Year) === lastYear,
       )
+
       const previousYear = yearRows.find(
         (r) => numberValue(r.Crop_Year) === (lastYear ?? 0) - 1,
       )
@@ -451,23 +493,21 @@ function createApiService(baseUrl: string): AnalyticsService {
         return previous == null || b === 0 ? null : ((a - b) / b) * 100
       }
 
-      const totalProduction = yearRows.reduce(
-        (sum, r) => sum + numberValue(r.Total_Production),
-        0,
-      )
-      const totalArea = yearRows.reduce(
-        (sum, r) => sum + numberValue(r.Total_Area),
-        0,
-      )
-
       return {
-        totalProduction,
-        totalArea,
+        totalProduction: yearRows.reduce(
+          (sum, r) => sum + numberValue(r.Total_Production),
+          0,
+        ),
+        totalArea: yearRows.reduce(
+          (sum, r) => sum + numberValue(r.Total_Area),
+          0,
+        ),
         cropCount: cropRows.length,
         stateCount: stateRows.length,
         districtCount: 0,
-        recordCount: numberValue(
-          yearRows.reduce((sum, r) => sum + numberValue(r.Record_Count), 0),
+        recordCount: yearRows.reduce(
+          (sum, r) => sum + numberValue(r.Record_Count),
+          0,
         ),
         excludedRecords: 0,
         yearLabel: `${filters.yearFrom}–${filters.yearTo}`,
@@ -538,40 +578,43 @@ function createApiService(baseUrl: string): AnalyticsService {
       }
 
       const response = await fetchJson<ApiRecord>(baseUrl, path, params)
-      const rows = Array.isArray(response.data) ? response.data as ApiRecord[] : []
+      const rows = Array.isArray(response.data)
+        ? (response.data as ApiRecord[])
+        : []
 
       return normalizeTimeSeries(rows, metric, seriesName)
     },
 
     async getRecords(query: RecordQuery): Promise<RecordPage> {
-      // Build query params that match the /api/records endpoint.
       const params = new URLSearchParams()
+      const filters = query.filters
 
-      // Year range
-      if (query.filters.yearFrom) params.set('year_from', String(query.filters.yearFrom))
-      if (query.filters.yearTo)   params.set('year_to',   String(query.filters.yearTo))
+      if (filters.yearFrom) params.set('year_from', String(filters.yearFrom))
+      if (filters.yearTo) params.set('year_to', String(filters.yearTo))
 
-      // Dimension filters — only send when a real value is selected
-      const s = selected(query.filters.state)
-      const d = selected(query.filters.district)
-      const c = selected(query.filters.crop)
-      const sn = selected(query.filters.season)
-      const dt = query.filters.dataType !== 'all' ? query.filters.dataType : undefined
+      const s = selected(filters.state)
+      const d = selected(filters.district)
+      const c = selected(filters.crop)
+      const sn = selected(filters.season)
+      const dt = filters.dataType !== 'all' ? filters.dataType : undefined
 
-      if (s)  params.set('state',     s)
-      if (d)  params.set('district',  d)
-      if (c)  params.set('crop',      c)
-      if (sn) params.set('season',    sn)
+      if (s) params.set('state', s)
+      if (d) params.set('district', d)
+      if (c) params.set('crop', c)
+      if (sn) params.set('season', sn)
       if (dt) params.set('data_type', dt)
 
-      // Search, sort, pagination
       if (query.search) params.set('search', query.search)
-      params.set('sort_by',    query.sortBy)
+      params.set('sort_by', query.sortBy)
       params.set('sort_order', query.sortDir)
-      params.set('page',       String(query.page))
-      params.set('page_size',  String(Math.min(query.pageSize, 100)))
+      params.set('page', String(query.page))
+      params.set('page_size', String(Math.min(query.pageSize, 100)))
 
-      const response = await fetchJson<ApiRecord>(baseUrl, '/api/records', params)
+      const response = await fetchJson<ApiRecord>(
+        baseUrl,
+        '/api/records',
+        params,
+      )
 
       const rawRecords = Array.isArray(response.records)
         ? (response.records as ApiRecord[])
@@ -579,18 +622,19 @@ function createApiService(baseUrl: string): AnalyticsService {
 
       return {
         rows: recordsFromApi(rawRecords),
-        total:    numberValue(response.total),
-        page:     numberValue(response.page),
+        total: numberValue(response.total),
+        page: numberValue(response.page),
         pageSize: numberValue(response.page_size),
       }
     },
 
     async getQuality() {
-      return normalizeQuality(await fetchJson<ApiRecord>(baseUrl, '/api/quality'))
+      return normalizeQuality(
+        await fetchJson<ApiRecord>(baseUrl, '/api/quality'),
+      )
     },
 
     async getProcessingStatus() {
-      // Do not pretend Spark, HDFS, or MapReduce have run.
       return PROCESSING_COMPONENTS.map((component) => ({
         ...component,
         state: 'not_connected' as const,
@@ -599,38 +643,45 @@ function createApiService(baseUrl: string): AnalyticsService {
     },
 
     async exportFilteredCsv(filters: Filters) {
-      // Build the same params as getRecords but call /api/export/records,
-      // which streams *all* matching rows without a page-size cap.
       const params = new URLSearchParams()
 
       if (filters.yearFrom) params.set('year_from', String(filters.yearFrom))
-      if (filters.yearTo)   params.set('year_to',   String(filters.yearTo))
+      if (filters.yearTo) params.set('year_to', String(filters.yearTo))
 
-      const s  = selected(filters.state)
-      const d  = selected(filters.district)
-      const c  = selected(filters.crop)
+      const s = selected(filters.state)
+      const d = selected(filters.district)
+      const c = selected(filters.crop)
       const sn = selected(filters.season)
       const dt = filters.dataType !== 'all' ? filters.dataType : undefined
 
-      if (s)  params.set('state',     s)
-      if (d)  params.set('district',  d)
-      if (c)  params.set('crop',      c)
-      if (sn) params.set('season',    sn)
+      if (s) params.set('state', s)
+      if (d) params.set('district', d)
+      if (c) params.set('crop', c)
+      if (sn) params.set('season', sn)
       if (dt) params.set('data_type', dt)
 
       const query = params.toString()
-      const url = `${baseUrl}/api/export/records${query ? `?${query}` : ''}`
-      const response = await fetch(url)
+      const url = `${baseUrl.replace(/\/$/, '')}/api/export/records${query ? `?${query}` : ''}`
+
+      console.info('[Analytics API] CSV export:', url)
+
+      let response: Response
+
+      try {
+        response = await fetch(url, { cache: 'no-store' })
+      } catch (error) {
+        console.error('[Analytics API] CSV export network error:', error)
+        throw new Error('Unable to connect to the API for CSV export.')
+      }
 
       if (!response.ok) {
-        let detail = ''
-        try {
-          const body = await response.json()
-          detail = typeof body.detail === 'string' ? `: ${body.detail}` : ''
-        } catch {
-          // ignore
-        }
-        throw new Error(`Export failed (${response.status})${detail}`)
+        const bodyText = await response.text().catch(() => '')
+        console.error(
+          '[Analytics API] CSV export failed:',
+          response.status,
+          bodyText,
+        )
+        throw new Error(`Export failed (${response.status})`)
       }
 
       return response.text()
@@ -643,8 +694,8 @@ function createApiService(baseUrl: string): AnalyticsService {
   }
 }
 
-const apiUrl = process.env.NEXT_PUBLIC_ANALYTICS_API_URL
+const apiUrl = process.env.NEXT_PUBLIC_ANALYTICS_API_URL?.trim()
 
 export const analyticsService: AnalyticsService = apiUrl
-  ? createApiService(apiUrl.replace(/\/$/, ''))
+  ? createApiService(apiUrl.replace(/\/+$/, ''))
   : demoService
