@@ -1,0 +1,35 @@
+State	Total_Production_tonnes
+Andaman And Nicobar Islands	2652600144.02
+Andhra Pradesh	35548821599.39
+Arunachal Pradesh	13069467.65
+Assam	4646231520.14
+Bihar	756167490.14
+Chandigarh	109435.24
+Chhattisgarh	222756572.9
+Goa	2064289269.36
+Gujarat	1106266593.49
+Haryana	763921444.96
+Himachal Pradesh	42703186.38
+Jammu And Kashmir	36594646.65
+Jharkhand	87908242.24
+Karnataka	91830376271.3
+Kerala	155749227872.15
+Ladakh	355979.27
+Madhya Pradesh	1235362055.42
+Maharashtra	2875351641.87
+Manipur	24148693.58
+Meghalaya	22296347.96
+Mizoram	3542397.37
+Nagaland	24837384.27
+Odisha	267632647.16
+Puducherry	615374949.76
+Punjab	1014113645.96
+Rajasthan	841413731.86
+Sikkim	3623062.48
+Tamil Nadu	114194454242.64
+Telangana	649769337.49
+The Dadra And Nagar Haveli And Daman And Diu	2763809.17
+Tripura	22578353.52
+Uttar Pradesh	6395619544.26
+Uttarakhand	266894748.99
+West Bengal	9225349032.33
