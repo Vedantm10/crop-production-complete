@@ -609,20 +609,20 @@ function createApiService(baseUrl: string): AnalyticsService {
         ),
       ])
 
-      const stateRows = stateResponse.data ?? []
-      const yearRows = yearResponse.data ?? []
-      const cropRows = cropResponse.data ?? []
+      const stateRows = Array.isArray(stateResponse.data) ? stateResponse.data : []
+      const yearRows = Array.isArray(yearResponse.data) ? yearResponse.data : []
+      const cropRows = Array.isArray(cropResponse.data) ? cropResponse.data : []
 
       const lastYear = yearRows.length
-        ? Math.max(...yearRows.map((r) => numberValue(r.Crop_Year)))
+        ? Math.max(...yearRows.map((r) => numberValue(r.Crop_Year ?? r.year)))
         : null
 
       const currentYear = yearRows.find(
-        (r) => numberValue(r.Crop_Year) === lastYear,
+        (r) => numberValue(r.Crop_Year ?? r.year) === lastYear,
       )
 
       const previousYear = yearRows.find(
-        (r) => numberValue(r.Crop_Year) === (lastYear ?? 0) - 1,
+        (r) => numberValue(r.Crop_Year ?? r.year) === (lastYear ?? 0) - 1,
       )
 
       const pctChange = (current: unknown, previous: unknown) => {
@@ -639,29 +639,29 @@ function createApiService(baseUrl: string): AnalyticsService {
 
       return {
         totalProduction: yearRows.reduce(
-          (sum, r) => sum + numberValue(r.Total_Production),
+          (sum, r) => sum + numberValue(r.Total_Production ?? r.Production ?? r.production),
           0,
         ),
         totalArea: yearRows.reduce(
-          (sum, r) => sum + numberValue(r.Total_Area),
+          (sum, r) => sum + numberValue(r.Total_Area ?? r.Area ?? r.area),
           0,
         ),
         cropCount: cropRows.length,
         stateCount: stateRows.length,
         districtCount: calculatedDistrictCount,
         recordCount: yearRows.reduce(
-          (sum, r) => sum + numberValue(r.Record_Count),
+          (sum, r) => sum + numberValue(r.Record_Count ?? r.records ?? r.count),
           0,
         ),
         excludedRecords: 0,
         yearLabel: `${filters.yearFrom}–${filters.yearTo}`,
         productionChangePct: pctChange(
-          currentYear?.Total_Production,
-          previousYear?.Total_Production,
+          currentYear?.Total_Production ?? currentYear?.Production ?? currentYear?.production,
+          previousYear?.Total_Production ?? previousYear?.Production ?? previousYear?.production,
         ),
         areaChangePct: pctChange(
-          currentYear?.Total_Area,
-          previousYear?.Total_Area,
+          currentYear?.Total_Area ?? currentYear?.Area ?? currentYear?.area,
+          previousYear?.Total_Area ?? previousYear?.Area ?? previousYear?.area,
         ),
         lastYear,
       } satisfies KpiSummary

@@ -1,4 +1,4 @@
-import { ArrowDownRight, ArrowUpRight, Minus, type LucideIcon } from 'lucide-react'
+import { AlertCircle, ArrowDownRight, ArrowUpRight, Minus, RotateCcw, type LucideIcon } from 'lucide-react'
 import { Card } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { formatPct } from '@/lib/format'
@@ -13,9 +13,11 @@ interface KpiCardProps {
   changeLabel?: string
   caption?: string
   isLoading?: boolean
+  error?: Error | null
+  onRetry?: () => void
 }
 
-export function KpiCard({ label, value, unit, icon: Icon, changePct, changeLabel, caption, isLoading }: KpiCardProps) {
+export function KpiCard({ label, value, unit, icon: Icon, changePct, changeLabel, caption, isLoading, error, onRetry }: KpiCardProps) {
   const TrendIcon = changePct === null || changePct === undefined ? Minus : changePct >= 0 ? ArrowUpRight : ArrowDownRight
   return (
     <Card className="gap-3 p-5">
@@ -25,7 +27,24 @@ export function KpiCard({ label, value, unit, icon: Icon, changePct, changeLabel
           <Icon className="size-4" aria-hidden="true" />
         </span>
       </div>
-      {isLoading ? (
+      {error ? (
+        <div className="flex flex-col gap-1 py-1 text-xs text-destructive">
+          <div className="flex items-center gap-1.5 font-medium">
+            <AlertCircle className="size-3.5 shrink-0" aria-hidden="true" />
+            <span>Could not load KPI</span>
+          </div>
+          {onRetry && (
+            <button
+              type="button"
+              onClick={onRetry}
+              className="mt-1 flex w-fit items-center gap-1 text-[11px] font-medium text-foreground underline hover:no-underline"
+            >
+              <RotateCcw className="size-3" aria-hidden="true" />
+              Retry
+            </button>
+          )}
+        </div>
+      ) : isLoading ? (
         <Skeleton className="h-8 w-28" />
       ) : (
         <p className="flex items-baseline gap-1.5">
@@ -33,7 +52,7 @@ export function KpiCard({ label, value, unit, icon: Icon, changePct, changeLabel
           {unit && <span className="text-sm text-muted-foreground">{unit}</span>}
         </p>
       )}
-      {changePct !== undefined ? (
+      {!error && (changePct !== undefined ? (
         <p className="flex items-center gap-1 text-xs text-muted-foreground">
           <span
             className={cn(
@@ -48,7 +67,8 @@ export function KpiCard({ label, value, unit, icon: Icon, changePct, changeLabel
         </p>
       ) : (
         caption && <p className="text-xs text-muted-foreground">{caption}</p>
-      )}
+      ))}
     </Card>
   )
 }
+

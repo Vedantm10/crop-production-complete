@@ -70,7 +70,9 @@ export function OverviewView() {
           icon={Wheat}
           changePct={k ? k.productionChangePct : undefined}
           changeLabel={changeLabel}
-          isLoading={kpis.isLoading}
+          isLoading={kpis.isLoading || (!kpis.data && !kpis.error)}
+          error={kpis.error}
+          onRetry={() => kpis.mutate()}
         />
         <KpiCard
           label="Cultivated area"
@@ -79,21 +81,27 @@ export function OverviewView() {
           icon={Layers}
           changePct={k ? k.areaChangePct : undefined}
           changeLabel={changeLabel}
-          isLoading={kpis.isLoading}
+          isLoading={kpis.isLoading || (!kpis.data && !kpis.error)}
+          error={kpis.error}
+          onRetry={() => kpis.mutate()}
         />
         <KpiCard
           label="Crops"
           value={formatNumber(k?.cropCount)}
           icon={Sprout}
           caption={k ? `${formatNumber(k.recordCount)} records in ${k.yearLabel}` : undefined}
-          isLoading={kpis.isLoading}
+          isLoading={kpis.isLoading || (!kpis.data && !kpis.error)}
+          error={kpis.error}
+          onRetry={() => kpis.mutate()}
         />
         <KpiCard
           label="States · Districts"
           value={k ? `${k.stateCount} · ${formatNumber(k.districtCount)}` : '—'}
           icon={MapPinned}
           caption={k && k.excludedRecords > 0 ? `${formatNumber(k.excludedRecords)} records excluded (invalid values)` : 'All records valid'}
-          isLoading={kpis.isLoading}
+          isLoading={kpis.isLoading || (!kpis.data && !kpis.error)}
+          error={kpis.error}
+          onRetry={() => kpis.mutate()}
         />
       </section>
 
@@ -107,7 +115,7 @@ export function OverviewView() {
               Full map
             </Link>
           }
-          isLoading={!byState.data && !byState.error}
+          isLoading={byState.isLoading || (!byState.data && !byState.error)}
           error={byState.error}
           onRetry={() => byState.mutate()}
           bodyClassName="h-[460px]"
@@ -124,9 +132,10 @@ export function OverviewView() {
           className="xl:col-span-2"
           title="Top 10 states"
           description={`Ranked by ${METRIC_LABEL[metric].toLowerCase()}`}
-          isLoading={!byState.data && !byState.error}
+          isLoading={byState.isLoading || (!byState.data && !byState.error)}
           error={byState.error}
           isEmpty={byState.data?.length === 0}
+          onRetry={() => byState.mutate()}
           bodyClassName="h-[460px]"
         >
           <RankingBarChart
@@ -145,18 +154,20 @@ export function OverviewView() {
           className="xl:col-span-2"
           title={`${METRIC_LABEL[metric]} over time`}
           description="Dashed segments and the shaded band mark synthetic (estimated) years."
-          isLoading={!trend.data && !trend.error}
+          isLoading={trend.isLoading || (!trend.data && !trend.error)}
           error={trend.error}
-          isEmpty={trend.data?.series.every((s) => s.points.every((p) => p.value === null))}
+          isEmpty={!trend.data || trend.data.series.length === 0 || trend.data.series.every((s) => s.points.every((p) => p.value === null))}
+          onRetry={() => trend.mutate()}
         >
           {trend.data && <TrendChart result={trend.data} metric={metric} className="size-full" ariaLabel="Line chart of the selected metric by year" />}
         </ChartCard>
         <ChartCard
           title="Crop mix"
           description={`Share of ${shareMetric === 'area' ? 'cultivated area' : 'production'}`}
-          isLoading={!byCrop.data && !byCrop.error}
+          isLoading={byCrop.isLoading || (!byCrop.data && !byCrop.error)}
           error={byCrop.error}
           isEmpty={topCrops.length === 0}
+          onRetry={() => byCrop.mutate()}
         >
           <DonutChart
             rows={topCrops}
@@ -171,9 +182,10 @@ export function OverviewView() {
       <ChartCard
         title="By season"
         description={`${METRIC_LABEL[metric]} for each cropping season`}
-        isLoading={!bySeason.data && !bySeason.error}
+        isLoading={bySeason.isLoading || (!bySeason.data && !bySeason.error)}
         error={bySeason.error}
         isEmpty={bySeason.data?.length === 0}
+        onRetry={() => bySeason.mutate()}
         bodyClassName="h-64"
       >
         <RankingBarChart
