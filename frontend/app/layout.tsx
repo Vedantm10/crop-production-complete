@@ -1,4 +1,3 @@
-import { Analytics } from '@vercel/analytics/next'
 import type { Metadata, Viewport } from 'next'
 import { Geist_Mono, Inter } from 'next/font/google'
 import { AppShell } from '@/components/layout/app-shell'
@@ -35,7 +34,6 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
     <html lang="en" className={`${inter.variable} ${geistMono.variable}`}>
       <body className="antialiased">
         <AppShell>{children}</AppShell>
-        {process.env.NODE_ENV === 'production' && <Analytics />}
       </body>
     </html>
   )

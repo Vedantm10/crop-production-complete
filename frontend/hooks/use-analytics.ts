@@ -4,7 +4,13 @@ import useSWR from 'swr'
 import { analyticsService } from '@/lib/data/service'
 import type { Dimension, Filters, Metric, RecordQuery } from '@/lib/data/types'
 
-const swrOptions = { keepPreviousData: true, revalidateOnFocus: false }
+const swrOptions = {
+  keepPreviousData: true,
+  revalidateOnFocus: false,
+  shouldRetryOnError: true,
+  errorRetryCount: 3,
+  errorRetryInterval: 3000,
+}
 
 export function useMeta() {
   return useSWR('meta', () => analyticsService.getMeta(), swrOptions)

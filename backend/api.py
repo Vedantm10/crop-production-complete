@@ -50,13 +50,27 @@ from pandas_analysis import (
 # ── In-memory dataset cache ───────────────────────────────────────────────────
 # Loaded once at startup; never reloaded per-request.
 _DF: Optional[pd.DataFrame] = None
+_DATASET_LOAD_ERROR: Optional[str] = None
+_METADATA_CACHE: Optional[dict] = None
 
 
 def get_df() -> pd.DataFrame:
     """Return the cleaned DataFrame, loading it the first time."""
-    global _DF
+    global _DF, _DATASET_LOAD_ERROR
+    if _DATASET_LOAD_ERROR:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Dataset unavailable due to startup error: {_DATASET_LOAD_ERROR}",
+        )
     if _DF is None:
-        _DF = clean(load_raw(DATA_PATH))
+        try:
+            _DF = clean(load_raw(DATA_PATH))
+        except Exception as e:
+            _DATASET_LOAD_ERROR = str(e)
+            raise HTTPException(
+                status_code=503,
+                detail=f"Failed to load dataset: {e}",
+            )
     return _DF
 
 
@@ -168,9 +182,14 @@ def _parse_year_list(raw: Optional[str]) -> Optional[list]:
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     """Pre-load and cache the dataset on server startup."""
-    get_df()          # blocks until the CSV is loaded and cleaned
-    yield             # server runs here
-    # (nothing to clean up)
+    global _DATASET_LOAD_ERROR
+    try:
+        get_df()
+        get_metadata_dict()
+    except Exception as e:
+        _DATASET_LOAD_ERROR = str(e)
+        print(f"[ERROR] Lifespan preloading failed: {e}", file=sys.stderr)
+    yield
 
 
 app = FastAPI(
@@ -189,7 +208,9 @@ app = FastAPI(
 
 # ── CORS setup ───────────────────────────────────────────────────────────────
 DEFAULT_ALLOWED_ORIGINS = [
+    "https://crop-production-complete-kxthfkj9a-vedantmore077-9813.vercel.app",
     "https://crop-production-complete-kd2sxmq5m-vedantmore077-9813.vercel.app",
+    "https://crop-production-complete.vercel.app",
     "http://localhost:3000",
     "http://127.0.0.1:3000",
 ]
@@ -216,12 +237,18 @@ app.add_middleware(
 @app.get("/api/health", tags=["Meta"])
 def health():
     """
-    Liveness check. Returns status, record count, and year bounds.
-    A 200 response means the dataset is loaded and the server is ready.
+    Liveness and readiness check. Returns status, record count, and year bounds.
+    Distinguishes application availability from dataset readiness.
     """
+    if _DATASET_LOAD_ERROR:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Backend startup error: {_DATASET_LOAD_ERROR}",
+        )
     df = get_df()
     return {
         "status": "ok",
+        "ready": True,
         "records": int(len(df)),
         "record_count": int(len(df)),
         "year_min": int(df["Crop_Year"].min()),
@@ -229,16 +256,12 @@ def health():
     }
 
 
-# =============================================================================
-# GET /api/metadata
-# =============================================================================
-@app.get("/api/metadata", tags=["Meta"])
-def metadata():
-    """
-    Returns all available dimension values (years, states, crops, seasons),
-    per-state district and crop lists for dependent filters,
-    the GeoJSON state-name mapping, provenance note, and unit caveats.
-    """
+def get_metadata_dict() -> dict:
+    """Compute and cache metadata dictionary once."""
+    global _METADATA_CACHE
+    if _METADATA_CACHE is not None:
+        return _METADATA_CACHE
+
     df = get_df()
 
     # Build per-state district and crop mappings for the frontend filter bar.
@@ -259,7 +282,7 @@ def metadata():
         .to_dict()
     )
 
-    return {
+    _METADATA_CACHE = {
         "years":   sorted(int(y) for y in df["Crop_Year"].dropna().unique()),
         "states":  sorted(str(s) for s in df["State_Name"].dropna().unique()),
         "crops":   sorted(str(c) for c in df["Crop"].dropna().unique()),
@@ -276,6 +299,20 @@ def metadata():
         "provenance_note":            _PROVENANCE_NOTE,
         "coconut_unit_caveat":        _COCONUT_CAVEAT,
     }
+    return _METADATA_CACHE
+
+
+# =============================================================================
+# GET /api/metadata
+# =============================================================================
+@app.get("/api/metadata", tags=["Meta"])
+def metadata():
+    """
+    Returns all available dimension values (years, states, crops, seasons),
+    per-state district and crop lists for dependent filters,
+    the GeoJSON state-name mapping, provenance note, and unit caveats.
+    """
+    return get_metadata_dict()
 
 
 # =============================================================================
