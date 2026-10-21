@@ -137,6 +137,9 @@ function selected(value: string): string | undefined {
 }
 
 function yearList(filters: Filters): string | undefined {
+  if (filters.yearFrom <= 1997 && filters.yearTo >= 2025) {
+    return undefined
+  }
   const years: number[] = []
 
   for (let year = filters.yearFrom; year <= filters.yearTo; year++) {
@@ -159,8 +162,12 @@ function filtersToParams(filters: Filters) {
 
   addParam(params, 'years', yearList(filters))
   addParam(params, 'states', selected(filters.state))
+  addParam(params, 'district', selected(filters.district))
   addParam(params, 'crops', selected(filters.crop))
   addParam(params, 'seasons', selected(filters.season))
+  if (filters.dataType && filters.dataType !== 'all') {
+    params.set('data_type', filters.dataType)
+  }
 
   return params
 }
@@ -176,97 +183,126 @@ function textValue(value: unknown): string {
 
 type ApiRecord = Record<string, unknown>
 
+const inFlightRequests = new Map<string, Promise<unknown>>()
+const responseCache = new Map<string, { data: unknown; expiry: number }>()
+const CACHE_TTL_MS = 30_000
+
 async function fetchJson<T>(
   baseUrl: string,
   path: string,
   params?: URLSearchParams,
-  maxRetries = 2,
+  maxRetries = 5,
 ): Promise<T> {
   const query = params?.toString()
   const url = `${baseUrl.replace(/\/$/, '')}${path}${query ? `?${query}` : ''}`
 
-  console.info('[Analytics API] Request:', url)
-
-  let lastError: unknown = null
-
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    let response: Response
-
-    try {
-      response = await fetch(url, {
-        cache: 'no-store',
-        headers: { Accept: 'application/json' },
-      })
-    } catch (error) {
-      lastError = error
-      if (attempt < maxRetries) {
-        console.warn(
-          `[Analytics API] Request attempt ${attempt + 1} failed (${url}). Retrying in 2.5s (server cold start)...`,
-        )
-        await new Promise((res) => setTimeout(res, 2500))
-        continue
-      }
-      console.error('[Analytics API] Network/CORS error:', url, error)
-      throw new Error(
-        `Unable to connect to the analytics API at ${url}. Check the browser console and backend CORS configuration.`,
-      )
-    }
-
-    if (!response.ok) {
-      if (response.status === 404 && path !== '/api/metadata' && path !== '/api/health') {
-        console.warn('[Analytics API] No data matches (404), returning empty structure:', url)
-        return {
-          data: [],
-          records: [],
-          total: 0,
-          page: 1,
-          page_size: 25,
-          total_pages: 1,
-        } as unknown as T
-      }
-
-      if (
-        (response.status === 502 || response.status === 503 || response.status === 504) &&
-        attempt < maxRetries
-      ) {
-        console.warn(
-          `[Analytics API] Server returned ${response.status} for ${url}. Retrying in 3s (backend warming up)...`,
-        )
-        await new Promise((res) => setTimeout(res, 3000))
-        continue
-      }
-
-      const bodyText = await response.text().catch(() => '')
-      console.error(
-        '[Analytics API] HTTP error:',
-        response.status,
-        url,
-        bodyText,
-      )
-
-      let detail = ''
-
-      try {
-        const body = JSON.parse(bodyText) as { detail?: unknown }
-        if (typeof body.detail === 'string') detail = `: ${body.detail}`
-      } catch {
-        if (bodyText) detail = `: ${bodyText.slice(0, 200)}`
-      }
-
-      throw new Error(`API ${path} returned ${response.status}${detail}`)
-    }
-
-    try {
-      const data = (await response.json()) as T
-      console.info('[Analytics API] Success:', path)
-      return data
-    } catch (error) {
-      console.error('[Analytics API] Invalid JSON response:', url, error)
-      throw new Error(`API ${path} returned an invalid JSON response`)
-    }
+  // Check client response cache
+  const cached = responseCache.get(url)
+  if (cached && Date.now() < cached.expiry) {
+    return cached.data as T
   }
 
-  throw lastError || new Error(`Failed to fetch ${url}`)
+  // Deduplicate concurrent in-flight requests for the exact same URL
+  const inFlight = inFlightRequests.get(url)
+  if (inFlight) {
+    return inFlight as Promise<T>
+  }
+
+  const promise = (async () => {
+    console.info('[Analytics API] Request:', url)
+
+    let lastError: unknown = null
+    const retryDelays = [2000, 3000, 5000, 7000, 10000, 10000]
+
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      let response: Response
+
+      try {
+        response = await fetch(url, {
+          cache: 'no-store',
+          headers: { Accept: 'application/json' },
+        })
+      } catch (error) {
+        lastError = error
+        if (attempt < maxRetries) {
+          const delay = retryDelays[attempt] || 4000
+          console.warn(
+            `[Analytics API] Request attempt ${attempt + 1} failed (${url}). Retrying in ${delay / 1000}s (server cold start / waking up)...`,
+          )
+          await new Promise((res) => setTimeout(res, delay))
+          continue
+        }
+        console.error('[Analytics API] Network/CORS error:', url, error)
+        throw new Error(
+          `Unable to connect to the analytics API at ${url}. Check browser console and ensure the backend is active.`,
+        )
+      }
+
+      if (!response.ok) {
+        if (response.status === 404 && path !== '/api/metadata' && path !== '/api/health') {
+          console.warn('[Analytics API] No data matches (404), returning empty structure:', url)
+          return {
+            data: [],
+            records: [],
+            total: 0,
+            page: 1,
+            page_size: 25,
+            total_pages: 1,
+          } as unknown as T
+        }
+
+        if (
+          (response.status === 502 || response.status === 503 || response.status === 504) &&
+          attempt < maxRetries
+        ) {
+          const delay = retryDelays[attempt] || 4000
+          console.warn(
+            `[Analytics API] Server returned ${response.status} for ${url}. Retrying in ${delay / 1000}s (backend warming up)...`,
+          )
+          await new Promise((res) => setTimeout(res, delay))
+          continue
+        }
+
+        const bodyText = await response.text().catch(() => '')
+        console.error(
+          '[Analytics API] HTTP error:',
+          response.status,
+          url,
+          bodyText,
+        )
+
+        let detail = ''
+
+        try {
+          const body = JSON.parse(bodyText) as { detail?: unknown }
+          if (typeof body.detail === 'string') detail = `: ${body.detail}`
+        } catch {
+          if (bodyText) detail = `: ${bodyText.slice(0, 200)}`
+        }
+
+        throw new Error(`API ${path} returned ${response.status}${detail}`)
+      }
+
+      try {
+        const data = (await response.json()) as T
+        responseCache.set(url, { data, expiry: Date.now() + CACHE_TTL_MS })
+        console.info('[Analytics API] Success:', path)
+        return data
+      } catch (error) {
+        console.error('[Analytics API] Invalid JSON response:', url, error)
+        throw new Error(`API ${path} returned an invalid JSON response`)
+      }
+    }
+
+    throw lastError || new Error(`Failed to fetch ${url}`)
+  })()
+
+  inFlightRequests.set(url, promise)
+  try {
+    return (await promise) as T
+  } finally {
+    inFlightRequests.delete(url)
+  }
 }
 
 function recordsFromApi(
@@ -527,6 +563,29 @@ function createApiService(baseUrl: string): AnalyticsService {
     },
 
     async getKpis(filters) {
+      const params = filtersToParams(filters)
+
+      try {
+        const kpiResp = await fetchJson<ApiRecord>(baseUrl, '/api/kpis', params)
+        if (kpiResp && typeof kpiResp.totalProduction === 'number') {
+          return {
+            totalProduction: numberValue(kpiResp.totalProduction),
+            totalArea: numberValue(kpiResp.totalArea),
+            cropCount: numberValue(kpiResp.cropCount),
+            stateCount: numberValue(kpiResp.stateCount),
+            districtCount: numberValue(kpiResp.districtCount),
+            recordCount: numberValue(kpiResp.recordCount),
+            excludedRecords: numberValue(kpiResp.excludedRecords),
+            yearLabel: textValue(kpiResp.yearLabel || `${filters.yearFrom}–${filters.yearTo}`),
+            productionChangePct: kpiResp.productionChangePct == null ? null : numberValue(kpiResp.productionChangePct),
+            areaChangePct: kpiResp.areaChangePct == null ? null : numberValue(kpiResp.areaChangePct),
+            lastYear: kpiResp.lastYear == null ? null : numberValue(kpiResp.lastYear),
+          } satisfies KpiSummary
+        }
+      } catch {
+        // Fall back to legacy endpoints if /api/kpis is unavailable
+      }
+
       const stateParams = filtersToParams(filters)
       const yearParams = filtersToParams(filters)
       const cropParams = filtersToParams(filters)

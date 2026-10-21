@@ -720,3 +720,117 @@ class TestMetadataEnriched:
         assert "data_types" in body
         assert isinstance(body["data_types"], list)
         assert len(body["data_types"]) > 0
+
+
+# =============================================================================
+# /api/kpis endpoint & Filter Combinations & Caching Audit
+# =============================================================================
+class TestKpisEndpoint:
+    def test_kpis_default(self):
+        resp = client.get("/api/kpis")
+        assert resp.status_code == 200
+        body = resp.json()
+        required_keys = [
+            "totalProduction", "totalArea", "cropCount", "stateCount",
+            "districtCount", "recordCount", "excludedRecords",
+            "productionChangePct", "areaChangePct", "lastYear"
+        ]
+        for k in required_keys:
+            assert k in body, f"Missing key {k} in /api/kpis"
+        assert body["recordCount"] == 463_847
+        assert body["cropCount"] == 115
+        assert body["stateCount"] == 34
+        assert body["districtCount"] == 737
+        assert body["totalProduction"] > 0
+        assert body["totalArea"] > 0
+        assert body["lastYear"] == 2025
+
+    def test_kpis_state_filter(self):
+        body_all = client.get("/api/kpis").json()
+        body_pb = client.get("/api/kpis?state=Punjab").json()
+        assert body_pb["stateCount"] == 1
+        assert body_pb["totalProduction"] < body_all["totalProduction"]
+        assert body_pb["recordCount"] < body_all["recordCount"]
+
+    def test_kpis_district_filter(self):
+        body_state = client.get("/api/kpis?state=Punjab").json()
+        body_dist = client.get("/api/kpis?state=Punjab&district=Amritsar").json()
+        assert body_dist["districtCount"] == 1
+        assert body_dist["recordCount"] < body_state["recordCount"]
+        assert body_dist["totalProduction"] < body_state["totalProduction"]
+
+    def test_kpis_crop_filter(self):
+        body_wheat = client.get("/api/kpis?crop=Wheat").json()
+        assert body_wheat["cropCount"] == 1
+        assert body_wheat["totalProduction"] > 0
+
+    def test_kpis_data_type_filter(self):
+        body_observed = client.get("/api/kpis?data_type=Observed").json()
+        body_all = client.get("/api/kpis").json()
+        assert body_observed["recordCount"] < body_all["recordCount"]
+
+
+class TestAnalyticalAggregationsAndYield:
+    def test_seasonal_includes_yield_and_count(self):
+        resp = client.get("/api/seasonal")
+        assert resp.status_code == 200
+        data = resp.json()["data"]
+        assert len(data) > 0
+        first = data[0]
+        assert "Yield_t_per_ha" in first
+        assert "Record_Count" in first
+        assert first["Yield_t_per_ha"] is not None
+        assert first["Yield_t_per_ha"] > 0
+
+    def test_cropwise_includes_area_and_yield(self):
+        resp = client.get("/api/cropwise?n=5")
+        assert resp.status_code == 200
+        data = resp.json()["data"]
+        assert len(data) == 5
+        first = data[0]
+        assert "Total_Area" in first or "Area" in first
+        assert "Yield_t_per_ha" in first
+        assert first["Total_Area"] > 0
+        assert first["Yield_t_per_ha"] is not None
+
+    def test_yearwise_includes_yield(self):
+        resp = client.get("/api/yearwise")
+        assert resp.status_code == 200
+        data = resp.json()["data"]
+        assert len(data) > 0
+        first = data[0]
+        assert "Yield_t_per_ha" in first
+        assert first["Yield_t_per_ha"] > 0
+
+    def test_crop_trend_includes_yield_and_years_filter(self):
+        resp_all = client.get("/api/crop-trend?crop=Rice")
+        assert resp_all.status_code == 200
+        all_data = resp_all.json()["data"]
+        assert "Yield_t_per_ha" in all_data[0]
+        assert all_data[0]["Yield_t_per_ha"] > 0
+
+        resp_filtered = client.get("/api/crop-trend?crop=Rice&years=2015,2016,2017")
+        assert resp_filtered.status_code == 200
+        filt_data = resp_filtered.json()["data"]
+        years = [r["Crop_Year"] for r in filt_data]
+        assert set(years) == {2015, 2016, 2017}
+
+    def test_state_trend_includes_yield_and_years_filter(self):
+        resp_filtered = client.get("/api/state-trend?state=Punjab&years=2010,2011,2012")
+        assert resp_filtered.status_code == 200
+        filt_data = resp_filtered.json()["data"]
+        years = [r["Crop_Year"] for r in filt_data]
+        assert set(years) == {2010, 2011, 2012}
+        assert "Yield_t_per_ha" in filt_data[0]
+        assert filt_data[0]["Yield_t_per_ha"] > 0
+
+    def test_caching_returns_consistent_result(self):
+        # Call same query twice to exercise cache hit
+        resp1 = client.get("/api/statewise?years=2020").json()
+        resp2 = client.get("/api/statewise?years=2020").json()
+        assert resp1 == resp2
+
+        # Different filter returns different result
+        resp3 = client.get("/api/statewise?years=2010").json()
+        assert resp1 != resp3
+

@@ -82,7 +82,7 @@ def clean(df: pd.DataFrame) -> pd.DataFrame:
     # --- 4. Numeric coercion ---
     df["Area"] = pd.to_numeric(df["Area"], errors="coerce")
     df["Production"] = pd.to_numeric(df["Production"], errors="coerce")
-    df["Crop_Year"] = pd.to_numeric(df["Crop_Year"], errors="coerce").astype("Int64")
+    df["Crop_Year"] = pd.to_numeric(df["Crop_Year"], errors="coerce").fillna(0).astype(int)
 
     # --- 5. Yield (t/ha or kg/ha proxy) — only where both fields are valid & Area > 0 ---
     # Area unit in original data is hectares; Production unit is metric tonnes.
@@ -96,8 +96,10 @@ def clean(df: pd.DataFrame) -> pd.DataFrame:
     # --- 6. Data provenance flag ---
     # All rows carry Data_Type = "Actual" in the CSV.
     # We add a conservative annotation for years beyond last verified release.
-    df["Data_Provenance"] = df["Crop_Year"].apply(
-        lambda y: "Potentially Extended" if y in POTENTIALLY_EXTENDED_YEARS else "Official Record"
+    df["Data_Provenance"] = np.where(
+        df["Crop_Year"].isin(POTENTIALLY_EXTENDED_YEARS),
+        "Potentially Extended",
+        "Official Record",
     )
 
     return df

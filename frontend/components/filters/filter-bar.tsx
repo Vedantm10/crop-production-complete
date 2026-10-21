@@ -17,23 +17,34 @@ const withAll = (label: string, values: string[]): FilterOption[] => [
   ...values.map((v) => ({ value: v, label: v })),
 ]
 
+import { CSV_TO_GEOJSON_MAP } from '@/lib/data/state-names'
+
+const FALLBACK_STATES = Object.keys(CSV_TO_GEOJSON_MAP).sort()
+const FALLBACK_SEASONS = ['Autumn', 'Kharif', 'Rabi', 'Summer', 'Whole Year', 'Winter']
+
 export function FilterBar({ show = ALL_KEYS }: { show?: FilterKey[] }) {
   const { meta, filters, setFilter, setYearRange, resetFilters, isDefault } = useFilters()
 
   const options = useMemo(() => {
-    if (!meta || !filters) return null
-    const years = Array.from({ length: meta.yearMax - meta.yearMin + 1 }, (_, i) => meta.yearMin + i)
-    const yearLabel = (y: number) => (meta.syntheticYears.includes(y) ? `${y} (synthetic)` : String(y))
-    const crops = filters.state === 'all' ? meta.crops : (meta.cropsByState[filters.state] ?? [])
-    const seasons = filters.crop === 'all' ? meta.seasons : (meta.seasonsByCrop[filters.crop] ?? [])
+    if (!filters) return null
+    const yearMin = meta?.yearMin ?? 1997
+    const yearMax = meta?.yearMax ?? 2025
+    const syntheticYears = meta?.syntheticYears ?? [2024, 2025]
+    const years = Array.from({ length: yearMax - yearMin + 1 }, (_, i) => yearMin + i)
+    const yearLabel = (y: number) => (syntheticYears.includes(y) ? `${y} (synthetic)` : String(y))
+    const states = meta?.states?.length ? meta.states : FALLBACK_STATES
+    const crops = filters.state === 'all' ? (meta?.crops ?? []) : (meta?.cropsByState?.[filters.state] ?? [])
+    const seasons = filters.crop === 'all' ? (meta?.seasons ?? FALLBACK_SEASONS) : (meta?.seasonsByCrop?.[filters.crop] ?? FALLBACK_SEASONS)
+    const districts = filters.state === 'all' ? [] : (meta?.districtsByState?.[filters.state] ?? [])
+
     return {
       yearFrom: years.map((y) => ({ value: String(y), label: yearLabel(y), disabled: y > filters.yearTo })),
       yearTo: years.map((y) => ({ value: String(y), label: yearLabel(y), disabled: y < filters.yearFrom })),
-      state: withAll('All states', meta.states),
+      state: withAll('All states', states),
       district:
         filters.state === 'all'
           ? [{ value: 'all', label: 'Select a state first' }]
-          : withAll('All districts', meta.districtsByState[filters.state] ?? []),
+          : withAll('All districts', districts),
       crop: withAll('All crops', crops),
       season: withAll('All seasons', seasons),
       dataType: [

@@ -34,16 +34,26 @@ const FiltersContext = createContext<FiltersContextValue | null>(null)
 function reconcile(next: DraftFilters, meta: DatasetMeta | undefined): DraftFilters {
   const result = { ...next }
   if (!meta) return result
-  if (result.state !== 'all' && !meta.states.includes(result.state)) result.state = 'all'
-  if (result.district !== 'all') {
-    const districts = result.state === 'all' ? [] : (meta.districtsByState[result.state] ?? [])
-    if (!districts.includes(result.district)) result.district = 'all'
+  if (result.state !== 'all' && meta.states?.length && !meta.states.includes(result.state)) {
+    result.state = 'all'
   }
-  if (result.crop !== 'all' && result.state !== 'all' && !(meta.cropsByState[result.state] ?? []).includes(result.crop)) {
-    result.crop = 'all'
+  if (result.district !== 'all' && result.state !== 'all') {
+    const districts = meta.districtsByState?.[result.state]
+    if (districts && districts.length > 0 && !districts.includes(result.district)) {
+      result.district = 'all'
+    }
   }
-  if (result.season !== 'all' && result.crop !== 'all' && !(meta.seasonsByCrop[result.crop] ?? []).includes(result.season)) {
-    result.season = 'all'
+  if (result.crop !== 'all' && result.state !== 'all') {
+    const crops = meta.cropsByState?.[result.state]
+    if (crops && crops.length > 0 && !crops.includes(result.crop)) {
+      result.crop = 'all'
+    }
+  }
+  if (result.season !== 'all' && result.crop !== 'all') {
+    const seasons = meta.seasonsByCrop?.[result.crop]
+    if (seasons && seasons.length > 0 && !seasons.includes(result.season)) {
+      result.season = 'all'
+    }
   }
   if (result.metric === 'yield' && result.crop === 'all') result.metric = 'production'
   if (result.yearFrom !== null && result.yearTo !== null && result.yearFrom > result.yearTo) {
@@ -74,20 +84,22 @@ export function FiltersProvider({ children }: { children: ReactNode }) {
 
   const resetFilters = useCallback(() => setDraft(DEFAULT_DRAFT), [])
 
-  const filters = useMemo<Filters | null>(() => {
-    if (!meta) return null
+  const filters = useMemo<Filters>(() => {
+    const yearMin = meta?.yearMin ?? 1997
+    const yearMax = meta?.yearMax ?? 2025
     return {
       ...draft,
-      yearFrom: draft.yearFrom ?? meta.yearMin,
-      yearTo: draft.yearTo ?? meta.yearMax,
+      yearFrom: draft.yearFrom ?? yearMin,
+      yearTo: draft.yearTo ?? yearMax,
     }
   }, [draft, meta])
 
   const isDefault = useMemo(() => {
-    if (!filters || !meta) return true
+    const yearMin = meta?.yearMin ?? 1997
+    const yearMax = meta?.yearMax ?? 2025
     return (
-      filters.yearFrom === meta.yearMin &&
-      filters.yearTo === meta.yearMax &&
+      filters.yearFrom === yearMin &&
+      filters.yearTo === yearMax &&
       draft.state === 'all' &&
       draft.district === 'all' &&
       draft.crop === 'all' &&
