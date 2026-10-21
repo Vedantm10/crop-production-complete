@@ -11,9 +11,27 @@ import json
 import os
 import pandas as pd
 
-GEOJSON_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(__file__)), "assets", "india_states.geojson"
-)
+def get_geojson_path() -> str:
+    """Resolve the India states GeoJSON path across local, Docker, and Render environments."""
+    env_path = os.environ.get("GEOJSON_PATH")
+    if env_path and os.path.exists(env_path):
+        return env_path
+
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    candidates = [
+        os.path.join(os.path.dirname(current_dir), "assets", "india_states.geojson"),
+        os.path.join(current_dir, "..", "assets", "india_states.geojson"),
+        os.path.join(os.getcwd(), "backend", "assets", "india_states.geojson"),
+        os.path.join(os.getcwd(), "assets", "india_states.geojson"),
+        os.path.join(os.getcwd(), "frontend", "public", "geo", "india_states.geojson"),
+    ]
+    for candidate in candidates:
+        norm = os.path.normpath(candidate)
+        if os.path.exists(norm):
+            return norm
+    return os.path.normpath(candidates[0])
+
+GEOJSON_PATH = get_geojson_path()
 
 # Mapping: CSV State_Name -> GeoJSON NAME_1
 # States not present in the GeoJSON are noted in UNMATCHED_STATES.

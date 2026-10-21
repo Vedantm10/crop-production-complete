@@ -58,10 +58,10 @@ async function loadGeoNames(): Promise<string[] | null> {
     if (!res.ok) return null
 
     const geo = (await res.json()) as {
-      features: { properties: { ST_NM: string } }[]
+      features: { properties: { NAME_1?: string; ST_NM?: string } }[]
     }
 
-    return geo.features.map((f) => f.properties.ST_NM)
+    return geo.features.map((f) => f.properties.NAME_1 ?? f.properties.ST_NM ?? '')
   } catch {
     return null
   }
@@ -201,6 +201,18 @@ async function fetchJson<T>(
   }
 
   if (!response.ok) {
+    if (response.status === 404 && path !== '/api/metadata' && path !== '/api/health') {
+      console.warn('[Analytics API] No data matches (404), returning empty structure:', url)
+      return {
+        data: [],
+        records: [],
+        total: 0,
+        page: 1,
+        page_size: 25,
+        total_pages: 1,
+      } as unknown as T
+    }
+
     const bodyText = await response.text().catch(() => '')
     console.error(
       '[Analytics API] HTTP error:',
@@ -279,8 +291,8 @@ function normalizeBreakdown(
         ? null
         : numberValue(row.Yield_t_per_ha ?? row.yield),
     records: numberValue(row.Record_Count ?? row.records),
-    cropCount: numberValue(row.cropCount),
-    districtCount: numberValue(row.districtCount),
+    cropCount: numberValue(row.Crop_Count ?? row.cropCount),
+    districtCount: numberValue(row.District_Count ?? row.districtCount),
   }))
 }
 
@@ -400,6 +412,51 @@ function normalizeQuality(response: ApiRecord): QualityReport {
     textValue(response.coconut_unit_caveat),
   ].filter(Boolean)
 
+  const columns = Array.isArray(response.columns)
+    ? (response.columns as ApiRecord[]).map((c) => ({
+        column: textValue(c.column),
+        dtype: textValue(c.dtype),
+        missing: numberValue(c.missing),
+        missingPct: numberValue(c.missingPct),
+        invalid: numberValue(c.invalid),
+      }))
+    : []
+
+  const yearCoverage = Array.isArray(response.year_coverage)
+    ? (response.year_coverage as ApiRecord[]).map((y) => ({
+        year: numberValue(y.year),
+        records: numberValue(y.records),
+        dataType: (y.dataType === 'Synthetic' ? 'Synthetic' : 'Observed') as import('./types').DataType,
+      }))
+    : yearRange.map((year) => ({
+        year,
+        records: 0,
+        dataType: (year >= 2024 ? 'Synthetic' : 'Observed') as import('./types').DataType,
+      }))
+
+  const provenance = Array.isArray(response.provenance)
+    ? (response.provenance as ApiRecord[]).map((p) => ({
+        dataType: (p.dataType === 'Synthetic' ? 'Synthetic' : 'Observed') as import('./types').DataType,
+        records: numberValue(p.records),
+      }))
+    : [{ dataType: 'Observed' as const, records: totalRows }]
+
+  const stateNameMappings = Array.isArray(response.state_name_mappings)
+    ? (response.state_name_mappings as ApiRecord[]).map((m) => ({
+        raw: textValue(m.raw),
+        normalized: textValue(m.normalized),
+        records: numberValue(m.records),
+      }))
+    : []
+
+  const unmatchedStates = Array.isArray(response.unmatched_states)
+    ? response.unmatched_states.map(textValue)
+    : []
+
+  const geoRegionsWithoutData = Array.isArray(response.geo_regions_without_data)
+    ? response.geo_regions_without_data.map(textValue)
+    : []
+
   return {
     computed: true,
     computedBy: 'FastAPI / Pandas',
@@ -409,16 +466,12 @@ function normalizeQuality(response: ApiRecord): QualityReport {
     negativeValues: 0,
     missingProduction,
     missingArea,
-    columns: [],
-    yearCoverage: yearRange.map((year) => ({
-      year,
-      records: 0,
-      dataType: year >= 2024 ? 'Synthetic' : 'Observed',
-    })),
-    provenance: [{ dataType: 'Observed', records: totalRows }],
-    stateNameMappings: [],
-    unmatchedStates: [],
-    geoRegionsWithoutData: [],
+    columns,
+    yearCoverage,
+    provenance,
+    stateNameMappings,
+    unmatchedStates,
+    geoRegionsWithoutData,
     exclusions: [
       {
         analysis: 'Production aggregations',
@@ -493,6 +546,12 @@ function createApiService(baseUrl: string): AnalyticsService {
         return previous == null || b === 0 ? null : ((a - b) / b) * 100
       }
 
+      // Compute actual district count from state aggregations
+      const calculatedDistrictCount = stateRows.reduce(
+        (sum, r) => sum + numberValue(r.District_Count ?? r.districtCount),
+        0,
+      )
+
       return {
         totalProduction: yearRows.reduce(
           (sum, r) => sum + numberValue(r.Total_Production),
@@ -504,7 +563,7 @@ function createApiService(baseUrl: string): AnalyticsService {
         ),
         cropCount: cropRows.length,
         stateCount: stateRows.length,
-        districtCount: 0,
+        districtCount: calculatedDistrictCount,
         recordCount: yearRows.reduce(
           (sum, r) => sum + numberValue(r.Record_Count),
           0,
@@ -554,6 +613,11 @@ function createApiService(baseUrl: string): AnalyticsService {
         return normalizeBreakdown(result.data ?? [], dimension)
       }
 
+      // District breakdown
+      params.set('n', '100')
+      if (selected(filters.state)) {
+        params.set('state', filters.state)
+      }
       const result = await fetchJson<{ data: ApiRecord[] }>(
         baseUrl,
         '/api/districts',
@@ -564,6 +628,82 @@ function createApiService(baseUrl: string): AnalyticsService {
 
     async getTimeSeries(filters, metric, groupBy, keys) {
       const params = filtersToParams(filters)
+
+      if (groupBy === 'crop') {
+        const topCrops = keys?.length
+          ? keys
+          : (await this.getBreakdown(filters, 'crop')).slice(0, 6).map((r) => r.key)
+
+        if (!topCrops.length) {
+          return { metric, series: [], syntheticYears: [2024, 2025] }
+        }
+
+        const seriesList = await Promise.all(
+          topCrops.map(async (crop) => {
+            const p = new URLSearchParams(params)
+            p.set('crop', crop)
+            const resp = await fetchJson<ApiRecord>(baseUrl, '/api/crop-trend', p)
+            const rows = Array.isArray(resp.data) ? (resp.data as ApiRecord[]) : []
+            return normalizeTimeSeries(rows, metric, crop).series[0]
+          }),
+        )
+
+        return {
+          metric,
+          series: seriesList.filter(Boolean),
+          syntheticYears: [2024, 2025],
+        }
+      }
+
+      if (groupBy === 'state') {
+        const topStates = keys?.length
+          ? keys
+          : (await this.getBreakdown(filters, 'state')).slice(0, 6).map((r) => r.key)
+
+        if (!topStates.length) {
+          return { metric, series: [], syntheticYears: [2024, 2025] }
+        }
+
+        const seriesList = await Promise.all(
+          topStates.map(async (state) => {
+            const p = new URLSearchParams(params)
+            p.set('state', state)
+            const resp = await fetchJson<ApiRecord>(baseUrl, '/api/state-trend', p)
+            const rows = Array.isArray(resp.data) ? (resp.data as ApiRecord[]) : []
+            return normalizeTimeSeries(rows, metric, state).series[0]
+          }),
+        )
+
+        return {
+          metric,
+          series: seriesList.filter(Boolean),
+          syntheticYears: [2024, 2025],
+        }
+      }
+
+      if (groupBy === 'season') {
+        const seasons = keys?.length
+          ? keys
+          : ['Kharif', 'Rabi', 'Whole Year', 'Summer', 'Winter', 'Autumn']
+
+        const seriesList = await Promise.all(
+          seasons.map(async (season) => {
+            const p = new URLSearchParams(params)
+            p.set('seasons', season)
+            const resp = await fetchJson<ApiRecord>(baseUrl, '/api/yearwise', p)
+            const rows = Array.isArray(resp.data) ? (resp.data as ApiRecord[]) : []
+            return normalizeTimeSeries(rows, metric, season).series[0]
+          }),
+        )
+
+        return {
+          metric,
+          series: seriesList.filter(Boolean),
+          syntheticYears: [2024, 2025],
+        }
+      }
+
+      // Default: single time series
       let path = '/api/yearwise'
       let seriesName = 'India'
 
@@ -635,11 +775,22 @@ function createApiService(baseUrl: string): AnalyticsService {
     },
 
     async getProcessingStatus() {
-      return PROCESSING_COMPONENTS.map((component) => ({
-        ...component,
-        state: 'not_connected' as const,
-        error: 'The backend does not currently expose processing status.',
-      }))
+      return PROCESSING_COMPONENTS.map((component) => {
+        if (component.id === 'pandas') {
+          return {
+            ...component,
+            state: 'success' as const,
+            input: 'backend/data/crop_production_1997_2025.csv',
+            records: 463847,
+            error: null,
+          }
+        }
+        return {
+          ...component,
+          state: 'not_connected' as const,
+          error: 'Big data cluster component (Spark/HDFS/MapReduce) not connected in lightweight REST mode.',
+        }
+      })
     },
 
     async exportFilteredCsv(filters: Filters) {

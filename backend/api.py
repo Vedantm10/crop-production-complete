@@ -187,13 +187,24 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Allow the local Next.js development server.
-# Change these to your production domain before deploying.
+# ── CORS setup ───────────────────────────────────────────────────────────────
+DEFAULT_ALLOWED_ORIGINS = [
+    "https://crop-production-complete-kd2sxmq5m-vedantmore077-9813.vercel.app",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+]
+_env_origins = os.getenv("ALLOWED_ORIGINS", "")
+_allowed_origins = [o.strip() for o in _env_origins.split(",") if o.strip()]
+for _orig in DEFAULT_ALLOWED_ORIGINS:
+    if _orig not in _allowed_origins:
+        _allowed_origins.append(_orig)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=_allowed_origins,
+    allow_origin_regex=r"^https://crop-production-complete.*\.vercel\.app$",
     allow_credentials=False,
-    allow_methods=["GET"],
+    allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["Content-Disposition", "X-Record-Count"],
 )
@@ -276,11 +287,56 @@ def quality():
     Data quality report: record counts, missing values, duplicates, year range,
     and known dataset limitations.
     """
-    rpt = quality_report(get_df())
+    df = get_df()
+    rpt = quality_report(df)
     # year_range is a tuple — convert to list for JSON
     rpt["year_range"] = list(rpt["year_range"])
     rpt["provenance_note"]     = _PROVENANCE_NOTE
     rpt["coconut_unit_caveat"] = _COCONUT_CAVEAT
+
+    # Detailed column profile
+    cols = ["State_Name", "District_Name", "Crop_Year", "Season", "Crop", "Area", "Production", "Data_Type"]
+    total = len(df)
+    rpt["columns"] = [
+        {
+            "column": col,
+            "dtype": str(df[col].dtype),
+            "missing": int(df[col].isna().sum()),
+            "missingPct": round(float(df[col].isna().sum() / total * 100), 2) if total > 0 else 0.0,
+            "invalid": 0,
+        }
+        for col in cols if col in df.columns
+    ]
+
+    # Records per year breakdown
+    year_counts = df["Crop_Year"].value_counts().sort_index().to_dict()
+    rpt["year_coverage"] = [
+        {
+            "year": int(y),
+            "records": int(count),
+            "dataType": "Synthetic" if int(y) in POTENTIALLY_EXTENDED_YEARS else "Observed",
+        }
+        for y, count in year_counts.items()
+    ]
+
+    # Provenance counts
+    synthetic_count = int(df["Crop_Year"].isin(POTENTIALLY_EXTENDED_YEARS).sum())
+    observed_count = total - synthetic_count
+    rpt["provenance"] = [
+        {"dataType": "Observed", "records": observed_count},
+        {"dataType": "Synthetic", "records": synthetic_count},
+    ]
+
+    # State mappings
+    state_counts = df["State_Name"].value_counts().to_dict()
+    rpt["state_name_mappings"] = [
+        {"raw": raw, "normalized": norm, "records": state_counts.get(raw, 0)}
+        for raw, norm in CSV_TO_GEOJSON.items()
+        if raw != norm and raw in state_counts
+    ]
+    rpt["unmatched_states"] = [k for k in UNMATCHED_NOTES.keys() if k in state_counts]
+    rpt["geo_regions_without_data"] = ["Lakshadweep", "Daman and Diu"]
+
     return _make_safe(rpt)
 
 
@@ -292,6 +348,8 @@ def statewise(
     years:   Optional[str] = Query(None, description="Comma-separated years, e.g. 2020,2021"),
     seasons: Optional[str] = Query(None, description="Comma-separated seasons"),
     crops:   Optional[str] = Query(None, description="Comma-separated crop names"),
+    states:  Optional[str] = Query(None, description="Comma-separated state names"),
+    state:   Optional[str] = Query(None, description="Single state name"),
 ):
     """
     Total production, area, record count, and derived yield by state.
@@ -300,11 +358,13 @@ def statewise(
     **Coconut caveat:** Kerala, Tamil Nadu, Karnataka, and Andhra Pradesh totals
     are inflated because Coconut is measured in nuts, not tonnes.
     """
+    state_list = _parse_csv_param(states) or ([state] if state else None)
     df = _apply_filters(
         get_df(),
         years=_parse_year_list(years),
         seasons=_parse_csv_param(seasons),
         crops=_parse_csv_param(crops),
+        states=state_list,
     )
     if df.empty:
         raise HTTPException(status_code=404, detail="No data matches the given filters.")
@@ -320,6 +380,7 @@ def statewise(
 # =============================================================================
 @app.get("/api/yearwise", tags=["Aggregations"])
 def yearwise(
+    years:   Optional[str] = Query(None, description="Comma-separated years"),
     state:   Optional[str] = Query(None, description="Single state name"),
     states:  Optional[str] = Query(None, description="Comma-separated state names"),
     seasons: Optional[str] = Query(None, description="Comma-separated seasons"),
@@ -339,6 +400,7 @@ def yearwise(
 
     df = _apply_filters(
         get_df(),
+        years=_parse_year_list(years),
         states=state_list,
         seasons=_parse_csv_param(seasons),
         crops=_parse_csv_param(crops),
@@ -367,7 +429,10 @@ def cropwise(
     n:       int          = Query(15, ge=1, le=115, description="Top-N crops to return (1–115)"),
     years:   Optional[str] = Query(None, description="Comma-separated years"),
     states:  Optional[str] = Query(None, description="Comma-separated states"),
+    state:   Optional[str] = Query(None, description="Single state name"),
     seasons: Optional[str] = Query(None, description="Comma-separated seasons"),
+    crops:   Optional[str] = Query(None, description="Comma-separated crop names"),
+    crop:    Optional[str] = Query(None, description="Single crop name"),
 ):
     """
     Top-N crops by total production. Default n=15.
@@ -375,11 +440,14 @@ def cropwise(
     **Coconut caveat:** Coconut production is in number of nuts — its total
     is not comparable to other crops measured in metric tonnes.
     """
+    state_list = _parse_csv_param(states) or ([state] if state else None)
+    crop_list = _parse_csv_param(crops) or ([crop] if crop else None)
     df = _apply_filters(
         get_df(),
         years=_parse_year_list(years),
-        states=_parse_csv_param(states),
+        states=state_list,
         seasons=_parse_csv_param(seasons),
+        crops=crop_list,
     )
     if df.empty:
         raise HTTPException(status_code=404, detail="No data matches the given filters.")
@@ -395,19 +463,23 @@ def cropwise(
 # =============================================================================
 @app.get("/api/seasonal", tags=["Aggregations"])
 def seasonal(
-    years:  Optional[str] = Query(None, description="Comma-separated years"),
-    states: Optional[str] = Query(None, description="Comma-separated states"),
-    crops:  Optional[str] = Query(None, description="Comma-separated crop names"),
+    years:   Optional[str] = Query(None, description="Comma-separated years"),
+    states:  Optional[str] = Query(None, description="Comma-separated states"),
+    state:   Optional[str] = Query(None, description="Single state name"),
+    crops:   Optional[str] = Query(None, description="Comma-separated crop names"),
+    seasons: Optional[str] = Query(None, description="Comma-separated seasons"),
 ):
     """
     Total production and area broken down by season
     (Kharif, Rabi, Whole Year, Summer, Winter, Autumn).
     """
+    state_list = _parse_csv_param(states) or ([state] if state else None)
     df = _apply_filters(
         get_df(),
         years=_parse_year_list(years),
-        states=_parse_csv_param(states),
+        states=state_list,
         crops=_parse_csv_param(crops),
+        seasons=_parse_csv_param(seasons),
     )
     if df.empty:
         raise HTTPException(status_code=404, detail="No data matches the given filters.")
@@ -537,24 +609,33 @@ def state_trend_endpoint(
 @app.get("/api/districts", tags=["Aggregations"])
 def districts(
     state:   Optional[str] = Query(None, description="Filter to one state"),
+    states:  Optional[str] = Query(None, description="Comma-separated states"),
     n:       int           = Query(15, ge=1, le=100, description="Top-N districts to return"),
     years:   Optional[str] = Query(None, description="Comma-separated years"),
     seasons: Optional[str] = Query(None, description="Comma-separated seasons"),
+    crops:   Optional[str] = Query(None, description="Comma-separated crop names"),
 ):
     """
     Top-N districts by total production. Optionally filtered by state.
     Useful for the district drill-down chart in the frontend.
     """
+    target_state = state
+    if not target_state and states:
+        parsed = _parse_csv_param(states)
+        if parsed:
+            target_state = parsed[0]
+
     df = _apply_filters(
         get_df(),
         years=_parse_year_list(years),
         seasons=_parse_csv_param(seasons),
+        crops=_parse_csv_param(crops),
     )
-    result = district_production(df, state=state, n=n)
+    result = district_production(df, state=target_state, n=n)
     if result.empty:
         raise HTTPException(status_code=404, detail="No district data for the given filters.")
     return {
-        "state":  state,
+        "state":  target_state,
         "n":      n,
         "data":   _df_to_records(result),
     }

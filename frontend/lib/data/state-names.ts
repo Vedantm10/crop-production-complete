@@ -1,8 +1,95 @@
 /**
- * Canonical names follow the `ST_NM` property of public/geo/india_states.geojson.
- * Source datasets (e.g. the data.gov.in crop production CSV) use different spellings,
- * trailing whitespace, and pre-2020 UT names, so every name passes through here.
+ * Bidirectional mapping between dataset State_Name and GeoJSON NAME_1 property.
+ * The GeoJSON file at public/geo/india_states.geojson uses historical NAME_1 names
+ * (e.g. 'Orissa', 'Uttaranchal', 'Andaman and Nicobar', 'Dadra and Nagar Haveli').
  */
+export const CSV_TO_GEOJSON_MAP: Record<string, string> = {
+  'Andaman And Nicobar Islands': 'Andaman and Nicobar',
+  'Andhra Pradesh': 'Andhra Pradesh',
+  'Arunachal Pradesh': 'Arunachal Pradesh',
+  'Assam': 'Assam',
+  'Bihar': 'Bihar',
+  'Chandigarh': 'Chandigarh',
+  'Chhattisgarh': 'Chhattisgarh',
+  'Goa': 'Goa',
+  'Gujarat': 'Gujarat',
+  'Haryana': 'Haryana',
+  'Himachal Pradesh': 'Himachal Pradesh',
+  'Jammu And Kashmir': 'Jammu and Kashmir',
+  'Jharkhand': 'Jharkhand',
+  'Karnataka': 'Karnataka',
+  'Kerala': 'Kerala',
+  'Ladakh': 'Jammu and Kashmir',
+  'Madhya Pradesh': 'Madhya Pradesh',
+  'Maharashtra': 'Maharashtra',
+  'Manipur': 'Manipur',
+  'Meghalaya': 'Meghalaya',
+  'Mizoram': 'Mizoram',
+  'Nagaland': 'Nagaland',
+  'Odisha': 'Orissa',
+  'Puducherry': 'Puducherry',
+  'Punjab': 'Punjab',
+  'Rajasthan': 'Rajasthan',
+  'Sikkim': 'Sikkim',
+  'Tamil Nadu': 'Tamil Nadu',
+  'Telangana': 'Telangana',
+  'The Dadra And Nagar Haveli And Daman And Diu': 'Dadra and Nagar Haveli',
+  'Tripura': 'Tripura',
+  'Uttar Pradesh': 'Uttar Pradesh',
+  'Uttarakhand': 'Uttaranchal',
+  'West Bengal': 'West Bengal',
+}
+
+export const GEOJSON_TO_CSV_MAP: Record<string, string> = {
+  'Andaman and Nicobar': 'Andaman And Nicobar Islands',
+  'Andhra Pradesh': 'Andhra Pradesh',
+  'Arunachal Pradesh': 'Arunachal Pradesh',
+  'Assam': 'Assam',
+  'Bihar': 'Bihar',
+  'Chandigarh': 'Chandigarh',
+  'Chhattisgarh': 'Chhattisgarh',
+  'Dadra and Nagar Haveli': 'The Dadra And Nagar Haveli And Daman And Diu',
+  'Daman and Diu': 'The Dadra And Nagar Haveli And Daman And Diu',
+  'Delhi': 'Delhi',
+  'Goa': 'Goa',
+  'Gujarat': 'Gujarat',
+  'Haryana': 'Haryana',
+  'Himachal Pradesh': 'Himachal Pradesh',
+  'Jammu and Kashmir': 'Jammu And Kashmir',
+  'Jharkhand': 'Jharkhand',
+  'Karnataka': 'Karnataka',
+  'Kerala': 'Kerala',
+  'Madhya Pradesh': 'Madhya Pradesh',
+  'Maharashtra': 'Maharashtra',
+  'Manipur': 'Manipur',
+  'Meghalaya': 'Meghalaya',
+  'Mizoram': 'Mizoram',
+  'Nagaland': 'Nagaland',
+  'Orissa': 'Odisha',
+  'Puducherry': 'Puducherry',
+  'Punjab': 'Punjab',
+  'Rajasthan': 'Rajasthan',
+  'Sikkim': 'Sikkim',
+  'Tamil Nadu': 'Tamil Nadu',
+  'Telangana': 'Telangana',
+  'Tripura': 'Tripura',
+  'Uttar Pradesh': 'Uttar Pradesh',
+  'Uttaranchal': 'Uttarakhand',
+  'West Bengal': 'West Bengal',
+}
+
+export function csvStateToGeoName(csvState: string): string {
+  if (!csvState) return ''
+  const trimmed = csvState.trim()
+  return CSV_TO_GEOJSON_MAP[trimmed] ?? trimmed
+}
+
+export function geoStateToCsvName(geoState: string): string {
+  if (!geoState) return ''
+  const trimmed = geoState.trim()
+  return GEOJSON_TO_CSV_MAP[trimmed] ?? trimmed
+}
+
 const ALIASES: Record<string, string> = {
   'andaman and nicobar islands': 'Andaman & Nicobar',
   'andaman and nicobar': 'Andaman & Nicobar',
@@ -33,7 +120,8 @@ export function matchToGeo(names: string[], geoNames: Set<string>) {
   const matched: string[] = []
   const unmatched: string[] = []
   for (const name of names) {
-    if (geoNames.has(name)) matched.push(name)
+    const geoName = csvStateToGeoName(name)
+    if (geoNames.has(geoName) || geoNames.has(name)) matched.push(name)
     else unmatched.push(name)
   }
   return { matched, unmatched }

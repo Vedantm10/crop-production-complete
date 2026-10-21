@@ -69,6 +69,8 @@ def statewise_production(df: pd.DataFrame) -> pd.DataFrame:
             Total_Production=("Production", "sum"),
             Total_Area=("Area", "sum"),
             Record_Count=("Production", "count"),
+            District_Count=("District_Name", "nunique"),
+            Crop_Count=("Crop", "nunique"),
         )
         .sort_values("Total_Production", ascending=False)
     )
@@ -84,14 +86,26 @@ def district_production(df: pd.DataFrame, state: str = None, n: int = 15) -> pd.
     filtered = df.dropna(subset=["Production"])
     if state and state != "All States":
         filtered = filtered[filtered["State_Name"] == state]
-    return (
+    agg = (
         filtered
-        .groupby(["State_Name", "District_Name"], as_index=False)["Production"]
-        .sum()
+        .groupby(["State_Name", "District_Name"], as_index=False)
+        .agg(
+            Production=("Production", "sum"),
+            Total_Production=("Production", "sum"),
+            Area=("Area", "sum"),
+            Total_Area=("Area", "sum"),
+            Record_Count=("Production", "count"),
+            Crop_Count=("Crop", "nunique"),
+        )
         .sort_values("Production", ascending=False)
         .head(n)
         .reset_index(drop=True)
     )
+    agg["Yield_t_per_ha"] = agg.apply(
+        lambda r: r["Total_Production"] / r["Total_Area"] if r["Total_Area"] and r["Total_Area"] > 0 else None,
+        axis=1,
+    )
+    return agg
 
 
 def crop_trend(df: pd.DataFrame, crop: str) -> pd.DataFrame:

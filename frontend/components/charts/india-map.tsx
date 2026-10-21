@@ -5,6 +5,7 @@ import { useMemo } from 'react'
 import useSWR from 'swr'
 import { Skeleton } from '@/components/ui/skeleton'
 import { GEOJSON_URL } from '@/lib/data/service'
+import { csvStateToGeoName, geoStateToCsvName } from '@/lib/data/state-names'
 import type { BreakdownRow, Metric } from '@/lib/data/types'
 import { METRIC_LABEL, METRIC_UNIT } from '@/lib/format'
 import { COLORS, SEQUENTIAL_GREENS, baseLayout } from './chart-theme'
@@ -53,17 +54,44 @@ export function IndiaMap({
     if (!geo) return { data: [], layout: {} }
 
     const geoNames = geo.features.map((f) => f.properties.NAME_1)
-    const valued = rows.filter(
-      (r) => r[metric] !== null && geoNames.includes(r.key),
-    )
-    const valuedSet = new Set(valued.map((r) => r.key))
+    const selectedGeo = selected !== 'all' ? csvStateToGeoName(selected) : 'all'
+
+    // Map rows to GeoJSON locations
+    const rowByGeo = new Map<string, BreakdownRow & { displayName: string }>()
+    for (const r of rows) {
+      if (r[metric] === null) continue
+      const geoKey = csvStateToGeoName(r.key)
+      if (!geoNames.includes(geoKey)) continue
+
+      const existing = rowByGeo.get(geoKey)
+      if (existing) {
+        // Aggregate if multiple dataset rows map to the same geometry (e.g., Ladakh + J&K)
+        const combinedProd = (existing.production ?? 0) + (r.production ?? 0)
+        const combinedArea = (existing.area ?? 0) + (r.area ?? 0)
+        existing.production = combinedProd
+        existing.area = combinedArea
+        existing.records = (existing.records ?? 0) + (r.records ?? 0)
+        existing.cropCount = Math.max(existing.cropCount, r.cropCount)
+        existing.districtCount = (existing.districtCount ?? 0) + (r.districtCount ?? 0)
+        existing.yield = combinedArea > 0 ? combinedProd / combinedArea : null
+      } else {
+        rowByGeo.set(geoKey, {
+          ...r,
+          displayName: r.key,
+        })
+      }
+    }
+
+    const valuedGeoNames = Array.from(rowByGeo.keys())
+    const valuedRows = Array.from(rowByGeo.values())
+    const valuedSet = new Set(valuedGeoNames)
     const missing = geoNames.filter((name) => !valuedSet.has(name))
 
     const unit = METRIC_UNIT[metric]
     const valueFormat = metric === 'yield' ? '.2f' : ',.0f'
-    const lineWidth = (name: string) => (name === selected ? 2.5 : 0.6)
+    const lineWidth = (name: string) => (name === selectedGeo ? 2.5 : 0.6)
     const lineColor = (name: string) =>
-      name === selected ? COLORS.highlight : '#ffffff'
+      name === selectedGeo ? COLORS.highlight : '#ffffff'
 
     const traces: Record<string, unknown>[] = [
       {
@@ -72,6 +100,7 @@ export function IndiaMap({
         featureidkey: 'properties.NAME_1',
         locations: missing,
         z: missing.map(() => 0),
+        customdata: missing.map((name) => [geoStateToCsvName(name)]),
         colorscale: [
           [0, COLORS.noData],
           [1, COLORS.noData],
@@ -84,25 +113,26 @@ export function IndiaMap({
           },
         },
         hovertemplate:
-          '<b>%{location}</b><br>No data for current filters<extra></extra>',
+          '<b>%{customdata[0]}</b><br>No data for current filters<extra></extra>',
       },
       {
         type: 'choropleth',
         geojson: geo,
         featureidkey: 'properties.NAME_1',
-        locations: valued.map((r) => r.key),
-        z: valued.map((r) => r[metric]),
-        customdata: valued.map((r) => [
+        locations: valuedGeoNames,
+        z: valuedRows.map((r) => r[metric]),
+        customdata: valuedRows.map((r) => [
           r.production,
           r.area,
           r.cropCount,
           r.districtCount,
+          r.displayName,
         ]),
         colorscale: SEQUENTIAL_GREENS,
         marker: {
           line: {
-            color: valued.map((r) => lineColor(r.key)),
-            width: valued.map((r) => lineWidth(r.key)),
+            color: valuedGeoNames.map(lineColor),
+            width: valuedGeoNames.map(lineWidth),
           },
         },
         colorbar: {
@@ -117,7 +147,7 @@ export function IndiaMap({
           outlinewidth: 0,
         },
         hovertemplate:
-          `<b>%{location}</b><br>${METRIC_LABEL[metric]}: %{z:${valueFormat}} ${unit}` +
+          `<b>%{customdata[4]}</b><br>${METRIC_LABEL[metric]}: %{z:${valueFormat}} ${unit}` +
           '<br>Production: %{customdata[0]:,.0f} t<br>Area: %{customdata[1]:,.0f} ha' +
           '<br>Crops: %{customdata[2]} · Districts: %{customdata[3]}<extra></extra>',
       },
@@ -158,9 +188,12 @@ export function IndiaMap({
       config={{ scrollZoom: false }}
       className={className}
       ariaLabel={`Choropleth map of India by state showing ${METRIC_LABEL[metric].toLowerCase()}. Click a state to filter.`}
-      onPointClick={(p) =>
-        p.location && onSelect(p.location === selected ? 'all' : p.location)
-      }
+      onPointClick={(p) => {
+        if (p.location) {
+          const csvName = geoStateToCsvName(p.location)
+          onSelect(csvName === selected ? 'all' : csvName)
+        }
+      }}
     />
   )
 }

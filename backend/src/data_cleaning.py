@@ -11,7 +11,26 @@ import pandas as pd
 import numpy as np
 import os
 
-DATA_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "crop_production_1997_2025.csv")
+def get_data_path() -> str:
+    """Resolve the dataset path across local development, Docker, and Render environments."""
+    env_path = os.environ.get("DATA_PATH")
+    if env_path and os.path.exists(env_path):
+        return env_path
+
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    candidates = [
+        os.path.join(os.path.dirname(current_dir), "data", "crop_production_1997_2025.csv"),
+        os.path.join(current_dir, "..", "data", "crop_production_1997_2025.csv"),
+        os.path.join(os.getcwd(), "backend", "data", "crop_production_1997_2025.csv"),
+        os.path.join(os.getcwd(), "data", "crop_production_1997_2025.csv"),
+    ]
+    for candidate in candidates:
+        norm = os.path.normpath(candidate)
+        if os.path.exists(norm):
+            return norm
+    return os.path.normpath(candidates[0])
+
+DATA_PATH = get_data_path()
 
 # Known years that contain data extended beyond confirmed government publications.
 # The dataset labels all rows as "Actual"; however 2023-2025 rows appear
@@ -21,9 +40,15 @@ POTENTIALLY_EXTENDED_YEARS = [2024, 2025]
 LAST_VERIFIED_YEAR = 2023   # conservative assumption
 
 
-def load_raw(path: str = DATA_PATH) -> pd.DataFrame:
+def load_raw(path: str = None) -> pd.DataFrame:
     """Load the raw CSV without any modification."""
-    df = pd.read_csv(path)
+    resolved_path = path or get_data_path()
+    if not os.path.exists(resolved_path):
+        raise FileNotFoundError(
+            f"Crop production dataset not found at '{resolved_path}'. "
+            f"Please verify that backend/data/crop_production_1997_2025.csv exists in the deployment."
+        )
+    df = pd.read_csv(resolved_path)
     return df
 
 
